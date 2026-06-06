@@ -15,6 +15,10 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
 
+# Suppress LiteLLM's verbose error output — our own WARNING logs are enough
+for noisy in ("LiteLLM", "LiteLLM Proxy", "LiteLLM Router", "httpx"):
+    logging.getLogger(noisy).setLevel(logging.ERROR)
+
 from workers.searcher import router as searcher_router
 from workers.reviewer import router as reviewer_router
 from workers.writer import router as writer_router

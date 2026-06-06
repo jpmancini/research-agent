@@ -101,9 +101,13 @@ async def _run_plan(plan: DAGPlan) -> tuple[str, int, list[str]]:
             node.status = "running"
         save_plan(plan)
 
-        # Dispatch all ready nodes in parallel
+        # Dispatch ready nodes with a small stagger to avoid simultaneous
+        # LLM calls exhausting the TPM limit on free-tier providers
         packets = [_build_packet(node, plan) for node in ready]
-        tasks = [_call_worker(pkt, node.worker_endpoint) for pkt, node in zip(packets, ready)]
+        async def _staggered(pkt, node, delay):
+            await asyncio.sleep(delay)
+            return await _call_worker(pkt, node.worker_endpoint)
+        tasks = [_staggered(pkt, node, i * 2) for i, (pkt, node) in enumerate(zip(packets, ready))]
         results = await asyncio.gather(*tasks)
 
         # Process results
