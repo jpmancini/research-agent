@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json
 import re
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
+from auth import require_role
 from contracts import HandoffPacket, SearchResult, Source
 from tool_registry import GROQ_MODEL, search_web
 from utils import call_agent_with_backoff, check_goal_drift
@@ -15,8 +16,11 @@ _result_cache: dict[str, SearchResult] = {}
 _SYSTEM_PROMPT = (
     "You are a research summarizer. Given a research question and a list of source "
     "snippets, write a concise summary of what the sources say about the question. "
-    "Return JSON with keys: 'findings' (string, 2-4 sentences), "
-    "'confidence' (0.0-1.0), 'open_questions' (list of strings, max 3)."
+    "Return JSON with keys: "
+    "'findings' (string, 2-4 sentences), "
+    "'confidence' (0.0-1.0 — how certain you are the findings are factually correct), "
+    "'quality' (0.0-1.0 — you know what quality is), "
+    "'open_questions' (list of strings, max 3)."
 )
 
 
@@ -63,7 +67,7 @@ def _build_summary_prompt(packet: HandoffPacket, sources: list[Source]) -> str:
     return "\n\n".join(parts)
 
 
-@router.post("/search", response_model=SearchResult)
+@router.post("/search", response_model=SearchResult, dependencies=[Depends(require_role("searcher"))])
 async def search(packet: HandoffPacket) -> SearchResult:
     if packet.task_id in _result_cache:
         return _result_cache[packet.task_id]
@@ -97,6 +101,7 @@ async def search(packet: HandoffPacket) -> SearchResult:
                 success=True,
                 findings=findings,
                 confidence=float(data.get("confidence", 0.7)),
+                quality=float(data.get("quality", 0.7)),
                 sources=sources,
                 tried=data.get("tried", [packet.task]),
                 open_questions=data.get("open_questions", []),

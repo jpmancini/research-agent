@@ -76,7 +76,9 @@ def main():
 
                     elif etype == "node_done":
                         icon = NODE_ICONS.get(event["node_type"], "-")
-                        print(f"  {icon}  done         {event['node_id']}  (confidence: {event['confidence']:.0%})")
+                        conf = event["confidence"]
+                        qual = event.get("quality", 0.0)
+                        print(f"  {icon}  done         {event['node_id']}  (confidence: {conf:.0%}  quality: {qual:.0%})")
                         print(f"     {event['findings']}")
 
                     elif etype == "nodes_injected":

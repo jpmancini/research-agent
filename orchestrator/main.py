@@ -22,6 +22,7 @@ router = APIRouter()
 
 _MONOLITH = "http://localhost:8000"
 WORKER_TIMEOUT = 120.0
+QUALITY_THRESHOLD = 0.5
 
 # Per-endpoint base URLs. Set env vars to route to separate worker processes;
 # fall back to the monolith URL so app.py works unchanged.
@@ -29,6 +30,13 @@ WORKER_URLS: dict[str, str] = {
     "/search": os.getenv("SEARCHER_URL", _MONOLITH),
     "/review": os.getenv("REVIEWER_URL", _MONOLITH),
     "/write":  os.getenv("WRITER_URL",   _MONOLITH),
+}
+
+# Per-endpoint bearer tokens — must match the WORKER_TOKENS in auth.py.
+_WORKER_TOKENS: dict[str, str] = {
+    "/search": os.getenv("SEARCHER_TOKEN", "dev-searcher-token"),
+    "/review": os.getenv("REVIEWER_TOKEN", "dev-reviewer-token"),
+    "/write":  os.getenv("WRITER_TOKEN",   "dev-writer-token"),
 }
 
 
@@ -46,12 +54,16 @@ class RunResponse(BaseModel):
 
 async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
     base = WORKER_URLS.get(endpoint, _MONOLITH)
+    token = _WORKER_TOKENS.get(endpoint, "")
     async with httpx.AsyncClient(timeout=WORKER_TIMEOUT) as client:
         try:
             resp = await client.post(
                 f"{base}{endpoint}",
                 content=packet.model_dump_json(),
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
             )
             resp.raise_for_status()
             if endpoint == "/search":
@@ -166,6 +178,15 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None, is_new_se
         search_node_ids = plan.all_search_node_ids()
         for node, result in zip(ready, results):
             if result.success:
+                # Quality gate: low-quality results trigger replan, same as goal drift
+                if result.quality < QUALITY_THRESHOLD and node.node_type != "write":
+                    result.success = False
+                    result.failure_type = "plan_failure"
+                    result.failure_reason = (
+                        f"Quality too low ({result.quality:.0%}): {result.findings[:80]}"
+                    )
+
+            if result.success:
                 node.status = "done"
                 node.result = result
                 steps_completed += 1
@@ -178,7 +199,7 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None, is_new_se
 
                 await emit("node_done", node_id=node.id, node_type=node.node_type,
                            findings=result.findings[:120] + "..." if len(result.findings) > 120 else result.findings,
-                           confidence=result.confidence)
+                           confidence=result.confidence, quality=result.quality)
 
                 if node.node_type == "search" and isinstance(result, SearchResult):
                     all_done = all(

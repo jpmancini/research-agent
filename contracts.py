@@ -39,6 +39,7 @@ class HandoffResult(BaseModel):
     failure_reason: str | None = None
     findings: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    quality: float = Field(default=0.0, ge=0.0, le=1.0)
     tried: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     suggested_next: str | None = None

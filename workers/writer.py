@@ -1,7 +1,8 @@
 from __future__ import annotations
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
+from auth import require_role
 from contracts import HandoffPacket, WriteResult
 from tool_registry import GROQ_MODEL
 from utils import call_agent_with_backoff
@@ -38,7 +39,7 @@ def _build_prompt(packet: HandoffPacket) -> str:
     return "\n\n".join(parts)
 
 
-@router.post("/write", response_model=WriteResult)
+@router.post("/write", response_model=WriteResult, dependencies=[Depends(require_role("writer"))])
 async def write(packet: HandoffPacket) -> WriteResult:
     if packet.task_id in _result_cache:
         return _result_cache[packet.task_id]
@@ -54,6 +55,7 @@ async def write(packet: HandoffPacket) -> WriteResult:
             brief=brief,
             word_count=word_count,
             confidence=0.85,
+            quality=0.85,
         )
     except Exception as e:
         result = WriteResult(

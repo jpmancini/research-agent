@@ -1,9 +1,10 @@
 from __future__ import annotations
 import json
 import re
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
+from auth import require_role
 from contracts import HandoffPacket, ReviewResult, Claim
 from tool_registry import GROQ_MODEL, fetch_page
 from utils import call_agent_with_backoff, check_goal_drift
@@ -18,7 +19,8 @@ _SYSTEM_PROMPT = (
     "'findings' (2-3 sentence summary), "
     "'claims' (list of objects: text, source_url, confidence), "
     "'contradictions' (list of strings), "
-    "'confidence' (0.0-1.0), "
+    "'confidence' (0.0-1.0 — how certain you are the claims are factually correct), "
+    "'quality' (0.0-1.0 — you know what quality is), "
     "'open_questions' (list of strings, max 2)."
 )
 
@@ -40,7 +42,7 @@ def _build_prompt(packet: HandoffPacket, url: str, page_text: str) -> str:
     return "\n\n".join(parts)
 
 
-@router.post("/review", response_model=ReviewResult)
+@router.post("/review", response_model=ReviewResult, dependencies=[Depends(require_role("reviewer"))])
 async def review(packet: HandoffPacket) -> ReviewResult:
     if packet.task_id in _result_cache:
         return _result_cache[packet.task_id]
@@ -89,6 +91,7 @@ async def review(packet: HandoffPacket) -> ReviewResult:
                 success=True,
                 findings=findings,
                 confidence=float(data.get("confidence", 0.7)),
+                quality=float(data.get("quality", 0.7)),
                 claims=claims,
                 contradictions=data.get("contradictions", []),
                 tried=[url] if url else [],
