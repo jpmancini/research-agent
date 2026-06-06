@@ -13,7 +13,7 @@ from datetime import datetime
 import httpx
 
 OUTPUT_DIR = Path("output")
-NODE_ICONS = {"search": "🔍", "review": "📄", "write": "✍️"}
+NODE_ICONS = {"search": "[search]", "review": "[review]", "write": "[write]"}
 
 
 def _save_brief(session_id: str, question: str, brief: str, open_questions: list[str]) -> Path:
@@ -44,7 +44,7 @@ def main():
         if args.session_id:
             payload["session_id"] = args.session_id
 
-        print(f"\nResearching: {args.question}\n{'─' * 60}")
+        print(f"\nResearching: {args.question}\n{'-' * 60}")
 
         async with httpx.AsyncClient(timeout=600.0) as client:
             async with client.stream("POST", f"{args.host}/orchestrate/stream", json=payload) as resp:
@@ -65,28 +65,28 @@ def main():
                         print(f"\nSession: {session_id}")
                         print(f"\nInitial plan ({len(nodes)} nodes):")
                         for n in nodes:
-                            deps = f"  ← {', '.join(n['depends_on'])}" if n["depends_on"] else ""
-                            print(f"  {NODE_ICONS.get(n['type'], '•')} {n['id']}{deps}")
+                            deps = f"  <- {', '.join(n['depends_on'])}" if n["depends_on"] else ""
+                            print(f"  {NODE_ICONS.get(n['type'], '[node]')} {n['id']}{deps}")
                         print()
 
                     elif etype == "node_dispatched":
-                        icon = NODE_ICONS.get(event["node_type"], "•")
+                        icon = NODE_ICONS.get(event["node_type"], "-")
                         print(f"  {icon}  dispatching  {event['node_id']}")
                         print(f"     task: {event['task']}")
 
                     elif etype == "node_done":
-                        icon = NODE_ICONS.get(event["node_type"], "•")
+                        icon = NODE_ICONS.get(event["node_type"], "-")
                         print(f"  {icon}  done         {event['node_id']}  (confidence: {event['confidence']:.0%})")
                         print(f"     {event['findings']}")
 
                     elif etype == "nodes_injected":
                         print(f"\n  + injected {event['count']} review nodes:")
                         for url in event["urls"]:
-                            print(f"    📄 {url[:70]}")
+                            print(f"    - {url[:70]}")
                         print()
 
                     elif etype == "node_failed":
-                        print(f"  ✗  failed       {event['node_id']}  [{event['failure_type']}]")
+                        print(f"  [failed]  {event['node_id']}  [{event['failure_type']}]")
                         print(f"     {event['reason']}")
 
                     elif etype == "complete":
@@ -95,18 +95,18 @@ def main():
                         steps = event.get("steps_completed", 0)
 
                         path = _save_brief(session_id, args.question, brief, open_questions)
-                        print(f"\n{'═' * 60}")
+                        print(f"\n{'=' * 60}")
                         print(f"STEPS COMPLETED: {steps}")
                         print(f"SAVED TO:        {path}")
-                        print(f"\n{'─' * 60}\nBRIEF\n{'─' * 60}\n")
+                        print(f"\n{'-' * 60}\nBRIEF\n{'-' * 60}\n")
                         print(brief)
 
                         if open_questions:
-                            print(f"\n{'─' * 60}\nOPEN QUESTIONS\n{'─' * 60}")
+                            print(f"\n{'-' * 60}\nOPEN QUESTIONS\n{'-' * 60}")
                             for q in open_questions:
-                                print(f"  • {q}")
+                                print(f"  - {q}")
 
-                        print(f"\n{'═' * 60}")
+                        print(f"\n{'=' * 60}")
                         print(f"To resume: python run.py \"{args.question}\" --session-id {session_id}")
 
                     elif etype == "error":
