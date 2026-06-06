@@ -203,7 +203,7 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None, is_new_se
 
                 if node.node_type == "search" and isinstance(result, SearchResult):
                     all_done = all(
-                        plan.nodes[nid].status == "done"
+                        plan.nodes[nid].status in ("done", "failed", "blocked")
                         for nid in search_node_ids if nid in plan.nodes
                     )
                     if all_done and not plan.has_write_node():

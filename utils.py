@@ -15,7 +15,7 @@ _STOPWORDS = {
 DRIFT_THRESHOLD = 0.15  # fraction of question keywords that must appear in findings
 
 
-def check_goal_drift(findings: str, research_question: str) -> bool:
+def check_goal_drift(findings: str | None, research_question: str) -> bool:
     """
     Returns True if findings appear to have drifted from the research question.
     Uses keyword overlap: if fewer than DRIFT_THRESHOLD fraction of the question's
@@ -24,6 +24,9 @@ def check_goal_drift(findings: str, research_question: str) -> bool:
     def keywords(text: str) -> set[str]:
         tokens = re.findall(r"[a-z]+", text.lower())
         return {t for t in tokens if t not in _STOPWORDS and len(t) > 2}
+
+    if not findings:
+        return True  # empty findings always count as drift
 
     q_keys = keywords(research_question)
     if not q_keys:

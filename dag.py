@@ -32,12 +32,17 @@ class DAGPlan(BaseModel):
     nodes: dict[str, PlanNode] = Field(default_factory=dict)
 
     def ready_nodes(self) -> list[PlanNode]:
-        """Nodes that are pending and whose dependencies are all done."""
+        """Nodes that are pending and whose dependencies have all settled.
+
+        Failed or blocked deps count as settled — the write node should
+        synthesize whatever was successfully reviewed rather than waiting
+        forever on a dependency that will never recover.
+        """
         return [
             n for n in self.nodes.values()
             if n.status == "pending"
             and all(
-                self.nodes[dep].status == "done"
+                self.nodes[dep].status in ("done", "failed", "blocked")
                 for dep in n.depends_on
                 if dep in self.nodes
             )
