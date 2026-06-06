@@ -1,39 +1,25 @@
 from __future__ import annotations
 import json
+import re
 from functools import lru_cache
 from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
-from strands.tools import tool
 from contracts import HandoffPacket, SearchResult, Source
 from mock_data import mock_search
+from tool_registry import get_tools
 from utils import call_agent_with_backoff
 
 router = APIRouter()
 
-# Simple in-process result cache for idempotency
 _result_cache: dict[str, SearchResult] = {}
-
-
-@tool
-def search_web(query: str) -> str:
-    """Search the web for sources relevant to a research query.
-
-    Args:
-        query: The search query string. Be specific and include key terms.
-
-    Returns:
-        JSON list of sources with url, title, snippet, and relevance_score.
-    """
-    sources = mock_search(query)
-    return json.dumps([s.model_dump() for s in sources])
 
 
 @lru_cache(maxsize=1)
 def _get_agent() -> Agent:
     return Agent(
         model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
-        tools=[search_web],
+        tools=get_tools("searcher"),
         system_prompt=(
             "You are a research searcher. Given a research task, use the search_web tool "
             "to find relevant, high-quality sources. Search with specific, targeted queries. "
@@ -68,18 +54,12 @@ async def search(packet: HandoffPacket) -> SearchResult:
         agent = _get_agent()
         response_text = await call_agent_with_backoff(agent, _build_prompt(packet))
 
-        # Parse JSON from agent response
-        import re
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-        else:
-            data = {}
+        data = json.loads(json_match.group()) if json_match else {}
 
         sources_raw = data.get("sources", [])
         sources = [Source(**s) if isinstance(s, dict) else s for s in sources_raw]
 
-        # Fallback: if agent didn't return sources, use mock directly
         if not sources:
             sources = mock_search(packet.task)
 

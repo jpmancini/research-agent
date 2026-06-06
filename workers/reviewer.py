@@ -5,9 +5,8 @@ from functools import lru_cache
 from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
-from strands.tools import tool
 from contracts import HandoffPacket, ReviewResult, Claim
-from mock_data import mock_fetch
+from tool_registry import get_tools
 from utils import call_agent_with_backoff
 
 router = APIRouter()
@@ -15,24 +14,11 @@ router = APIRouter()
 _result_cache: dict[str, ReviewResult] = {}
 
 
-@tool
-def fetch_page(url: str) -> str:
-    """Fetch and return the text content of a web page.
-
-    Args:
-        url: The full URL of the page to fetch.
-
-    Returns:
-        The main text content of the page.
-    """
-    return mock_fetch(url)
-
-
 @lru_cache(maxsize=1)
 def _get_agent() -> Agent:
     return Agent(
         model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
-        tools=[fetch_page],
+        tools=get_tools("reviewer"),
         system_prompt=(
             "You are a research reviewer. Given a source URL and research context, "
             "fetch the page content and extract key factual claims. "
@@ -49,7 +35,6 @@ def _get_agent() -> Agent:
 
 
 def _build_prompt(packet: HandoffPacket) -> str:
-    # Extract URL from task text
     url_match = re.search(r'https?://\S+', packet.task)
     url = url_match.group() if url_match else ""
 
@@ -77,14 +62,10 @@ async def review(packet: HandoffPacket) -> ReviewResult:
         response_text = await call_agent_with_backoff(agent, _build_prompt(packet))
 
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group())
-        else:
-            data = {}
+        data = json.loads(json_match.group()) if json_match else {}
 
-        claims_raw = data.get("claims", [])
         claims = []
-        for c in claims_raw:
+        for c in data.get("claims", []):
             if isinstance(c, dict):
                 try:
                     claims.append(Claim(**c))
