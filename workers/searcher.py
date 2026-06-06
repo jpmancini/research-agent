@@ -7,6 +7,7 @@ from strands.models.litellm import LiteLLMModel
 from strands.tools import tool
 from contracts import HandoffPacket, SearchResult, Source
 from mock_data import mock_search
+from utils import call_agent_with_backoff
 
 router = APIRouter()
 
@@ -65,8 +66,7 @@ async def search(packet: HandoffPacket) -> SearchResult:
 
     try:
         agent = _get_agent()
-        response = agent(_build_prompt(packet))
-        response_text = str(response)
+        response_text = await call_agent_with_backoff(agent, _build_prompt(packet))
 
         # Parse JSON from agent response
         import re

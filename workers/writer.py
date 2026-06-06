@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, WriteResult
+from utils import call_agent_with_backoff
 
 router = APIRouter()
 
@@ -45,8 +46,7 @@ async def write(packet: HandoffPacket) -> WriteResult:
 
     try:
         agent = _get_agent()
-        response = agent(_build_prompt(packet))
-        brief = str(response).strip()
+        brief = (await call_agent_with_backoff(agent, _build_prompt(packet))).strip()
         word_count = len(brief.split())
 
         result = WriteResult(

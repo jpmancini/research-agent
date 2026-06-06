@@ -8,6 +8,7 @@ from strands.models.litellm import LiteLLMModel
 from strands.tools import tool
 from contracts import HandoffPacket, ReviewResult, Claim
 from mock_data import mock_fetch
+from utils import call_agent_with_backoff
 
 router = APIRouter()
 
@@ -73,8 +74,7 @@ async def review(packet: HandoffPacket) -> ReviewResult:
 
     try:
         agent = _get_agent()
-        response = agent(_build_prompt(packet))
-        response_text = str(response)
+        response_text = await call_agent_with_backoff(agent, _build_prompt(packet))
 
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
         if json_match:
