@@ -1,8 +1,10 @@
 from __future__ import annotations
 import asyncio
 import uuid
+import json
 import logging
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
 from contracts import (
@@ -17,12 +19,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 BASE_URL = "http://localhost:8000"
-WORKER_TIMEOUT = 120.0  # seconds
+WORKER_TIMEOUT = 120.0
 
 
 class RunRequest(BaseModel):
     research_question: str
-    session_id: str | None = None   # provide to resume a prior run
+    session_id: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -33,7 +35,6 @@ class RunResponse(BaseModel):
 
 
 async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
-    """Call a worker endpoint over HTTP. Returns a failure result on timeout or error."""
     async with httpx.AsyncClient(timeout=WORKER_TIMEOUT) as client:
         try:
             resp = await client.post(
@@ -42,15 +43,13 @@ async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
                 headers={"Content-Type": "application/json"},
             )
             resp.raise_for_status()
-            # Deserialize to the right subtype based on endpoint
             if endpoint == "/search":
                 return SearchResult.model_validate_json(resp.text)
             elif endpoint == "/review":
                 return ReviewResult.model_validate_json(resp.text)
             elif endpoint == "/write":
                 return WriteResult.model_validate_json(resp.text)
-            else:
-                return HandoffResult.model_validate_json(resp.text)
+            return HandoffResult.model_validate_json(resp.text)
         except httpx.TimeoutException:
             return HandoffResult(
                 task_id=packet.task_id,
@@ -68,7 +67,6 @@ async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
 
 
 def _build_packet(node: PlanNode, plan: DAGPlan) -> HandoffPacket:
-    """Build a HandoffPacket for a node, injecting Mem0 context."""
     context = get_context_summary(node.task, plan.session_id, limit=5)
     return HandoffPacket(
         task_id=new_task_id(),
@@ -81,28 +79,32 @@ def _build_packet(node: PlanNode, plan: DAGPlan) -> HandoffPacket:
     )
 
 
-async def _run_plan(plan: DAGPlan) -> tuple[str, int, list[str]]:
-    """
-    Execute the DAG plan to completion.
-    Returns (brief, steps_completed, open_questions).
-    """
+def _event(type: str, **kwargs) -> str:
+    return f"data: {json.dumps({'type': type, **kwargs})}\n\n"
+
+
+async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[str, int, list[str]]:
     steps_completed = 0
     brief = ""
     all_open_questions: list[str] = []
+
+    async def emit(type: str, **kwargs):
+        if queue:
+            await queue.put({"type": type, **kwargs})
 
     while not plan.is_complete():
         ready = plan.ready_nodes()
         if not ready:
             logger.warning("No ready nodes but plan not complete — possible deadlock")
+            await emit("error", message="Deadlock detected — no ready nodes")
             break
 
-        # Mark running
         for node in ready:
             node.status = "running"
+            await emit("node_dispatched", node_id=node.id, node_type=node.node_type,
+                       task=node.task[:80] + "..." if len(node.task) > 80 else node.task)
         save_plan(plan)
 
-        # Dispatch ready nodes with a small stagger to avoid simultaneous
-        # LLM calls exhausting the TPM limit on free-tier providers
         packets = [_build_packet(node, plan) for node in ready]
         async def _staggered(pkt, node, delay):
             await asyncio.sleep(delay)
@@ -110,7 +112,6 @@ async def _run_plan(plan: DAGPlan) -> tuple[str, int, list[str]]:
         tasks = [_staggered(pkt, node, i * 2) for i, (pkt, node) in enumerate(zip(packets, ready))]
         results = await asyncio.gather(*tasks)
 
-        # Process results
         search_node_ids = plan.all_search_node_ids()
         for node, result in zip(ready, results):
             if result.success:
@@ -118,68 +119,90 @@ async def _run_plan(plan: DAGPlan) -> tuple[str, int, list[str]]:
                 node.result = result
                 steps_completed += 1
 
-                # Write findings to Mem0
                 if result.findings:
                     add_finding(result.findings, plan.session_id)
-
-                # Collect open questions
                 all_open_questions.extend(result.open_questions)
 
-                # Dynamic injection: after search nodes complete, inject review nodes
+                await emit("node_done", node_id=node.id, node_type=node.node_type,
+                           findings=result.findings[:120] + "..." if len(result.findings) > 120 else result.findings,
+                           confidence=result.confidence)
+
                 if node.node_type == "search" and isinstance(result, SearchResult):
                     all_done = all(
                         plan.nodes[nid].status == "done"
-                        for nid in search_node_ids
-                        if nid in plan.nodes
+                        for nid in search_node_ids if nid in plan.nodes
                     )
                     if all_done and not plan.has_write_node():
-                        # Collect all sources from all completed search nodes
                         all_sources = []
                         for nid in search_node_ids:
                             sr = plan.nodes[nid].result
                             if isinstance(sr, SearchResult):
                                 all_sources.extend(sr.sources)
-                        # Deduplicate by URL
-                        seen = set()
-                        unique_sources = []
-                        for s in all_sources:
-                            if s.url not in seen:
-                                seen.add(s.url)
-                                unique_sources.append(s)
+                        seen: set[str] = set()
+                        unique_sources = [s for s in all_sources if not (s.url in seen or seen.add(s.url))]  # type: ignore
                         plan.inject_review_nodes(unique_sources, search_node_ids)
-                        logger.info(f"Injected {len(unique_sources)} review nodes")
+                        await emit("nodes_injected",
+                                   count=len(unique_sources),
+                                   urls=[s.url for s in unique_sources])
 
-                # Capture the brief from the write node
                 if node.node_type == "write" and isinstance(result, WriteResult):
                     brief = result.brief
 
             else:
                 handle_failure(node, result, plan, add_dead_end)
-                if result.failure_reason:
-                    logger.warning(f"Node {node.id} failed: {result.failure_reason}")
+                await emit("node_failed", node_id=node.id,
+                           failure_type=result.failure_type,
+                           reason=(result.failure_reason or "")[:120])
+                logger.warning(f"Node {node.id} failed: {result.failure_reason}")
 
         save_plan(plan)
 
     return brief, steps_completed, all_open_questions
 
 
-@router.post("/orchestrate", response_model=RunResponse)
-async def orchestrate(req: RunRequest) -> RunResponse:
-    # Resume or create session
+def _init_plan(req: RunRequest) -> DAGPlan:
     if req.session_id:
         plan = load_plan(req.session_id)
         if plan:
-            plan = resume_plan(plan)
             logger.info(f"Resuming session {req.session_id}")
-        else:
-            plan = build_initial_plan(req.session_id, req.research_question)
-    else:
-        session_id = str(uuid.uuid4())
-        plan = build_initial_plan(session_id, req.research_question)
-
+            return resume_plan(plan)
+    plan = build_initial_plan(str(uuid.uuid4()), req.research_question)
     save_plan(plan)
-    brief, steps, open_questions = await _run_plan(plan)
+    return plan
 
+
+@router.post("/orchestrate/stream")
+async def orchestrate_stream(req: RunRequest) -> StreamingResponse:
+    plan = _init_plan(req)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def generate():
+        # Emit initial plan
+        yield _event("plan_created",
+                     session_id=plan.session_id,
+                     nodes=[{"id": n.id, "type": n.node_type, "depends_on": n.depends_on}
+                            for n in plan.nodes.values()])
+
+        async def run():
+            brief, steps, questions = await _run_plan(plan, queue)
+            await queue.put({"type": "complete", "brief": brief,
+                             "steps_completed": steps, "open_questions": list(set(questions))})
+
+        asyncio.create_task(run())
+
+        while True:
+            event = await queue.get()
+            yield _event(**event) if "type" in event else _event("unknown")
+            if event.get("type") in ("complete", "error"):
+                break
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/orchestrate", response_model=RunResponse)
+async def orchestrate(req: RunRequest) -> RunResponse:
+    plan = _init_plan(req)
+    brief, steps, open_questions = await _run_plan(plan)
     return RunResponse(
         session_id=plan.session_id,
         brief=brief or "Run incomplete — check logs for failure details.",

@@ -7,15 +7,16 @@ Usage:
 """
 import asyncio
 import argparse
+import json
 from pathlib import Path
 from datetime import datetime
 import httpx
 
-
 OUTPUT_DIR = Path("output")
+NODE_ICONS = {"search": "🔍", "review": "📄", "write": "✍️"}
 
 
-def _save_brief(session_id: str, question: str, data: dict) -> Path:
+def _save_brief(session_id: str, question: str, brief: str, open_questions: list[str]) -> Path:
     OUTPUT_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = OUTPUT_DIR / f"{timestamp}_{session_id[:8]}.md"
@@ -23,15 +24,10 @@ def _save_brief(session_id: str, question: str, data: dict) -> Path:
         f"# Research Brief\n\n"
         f"**Question:** {question}\n"
         f"**Session:** {session_id}\n"
-        f"**Steps completed:** {data['steps_completed']}\n"
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        f"---\n\n"
-        f"{data['brief']}\n\n"
-        + (
-            "---\n\n## Open Questions\n\n"
-            + "\n".join(f"- {q}" for q in data["open_questions"])
-            if data["open_questions"] else ""
-        )
+        f"---\n\n{brief}\n\n"
+        + ("---\n\n## Open Questions\n\n" + "\n".join(f"- {q}" for q in open_questions)
+           if open_questions else "")
     )
     return path
 
@@ -40,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run a research agent query")
     parser.add_argument("question", help="The research question to investigate")
     parser.add_argument("--session-id", default=None, help="Resume a prior session")
-    parser.add_argument("--host", default="http://localhost:8000", help="API host")
+    parser.add_argument("--host", default="http://localhost:8000")
     args = parser.parse_args()
 
     async def run():
@@ -51,26 +47,70 @@ def main():
         print(f"\nResearching: {args.question}\n{'─' * 60}")
 
         async with httpx.AsyncClient(timeout=600.0) as client:
-            resp = await client.post(f"{args.host}/orchestrate", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            async with client.stream("POST", f"{args.host}/orchestrate/stream", json=payload) as resp:
+                resp.raise_for_status()
+                session_id = None
+                brief = ""
+                open_questions = []
 
-        path = _save_brief(data["session_id"], args.question, data)
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    event = json.loads(line[6:])
+                    etype = event.get("type")
 
-        print(f"\n{'═' * 60}")
-        print(f"SESSION ID:      {data['session_id']}")
-        print(f"STEPS COMPLETED: {data['steps_completed']}")
-        print(f"SAVED TO:        {path}")
-        print(f"\n{'─' * 60}\nBRIEF\n{'─' * 60}\n")
-        print(data["brief"])
+                    if etype == "plan_created":
+                        session_id = event["session_id"]
+                        nodes = event["nodes"]
+                        print(f"\nSession: {session_id}")
+                        print(f"\nInitial plan ({len(nodes)} nodes):")
+                        for n in nodes:
+                            deps = f"  ← {', '.join(n['depends_on'])}" if n["depends_on"] else ""
+                            print(f"  {NODE_ICONS.get(n['type'], '•')} {n['id']}{deps}")
+                        print()
 
-        if data["open_questions"]:
-            print(f"\n{'─' * 60}\nOPEN QUESTIONS\n{'─' * 60}")
-            for q in data["open_questions"]:
-                print(f"  • {q}")
+                    elif etype == "node_dispatched":
+                        icon = NODE_ICONS.get(event["node_type"], "•")
+                        print(f"  {icon}  dispatching  {event['node_id']}")
+                        print(f"     task: {event['task']}")
 
-        print(f"\n{'═' * 60}")
-        print(f"To resume: python run.py \"{args.question}\" --session-id {data['session_id']}")
+                    elif etype == "node_done":
+                        icon = NODE_ICONS.get(event["node_type"], "•")
+                        print(f"  {icon}  done         {event['node_id']}  (confidence: {event['confidence']:.0%})")
+                        print(f"     {event['findings']}")
+
+                    elif etype == "nodes_injected":
+                        print(f"\n  + injected {event['count']} review nodes:")
+                        for url in event["urls"]:
+                            print(f"    📄 {url[:70]}")
+                        print()
+
+                    elif etype == "node_failed":
+                        print(f"  ✗  failed       {event['node_id']}  [{event['failure_type']}]")
+                        print(f"     {event['reason']}")
+
+                    elif etype == "complete":
+                        brief = event.get("brief", "")
+                        open_questions = event.get("open_questions", [])
+                        steps = event.get("steps_completed", 0)
+
+                        path = _save_brief(session_id, args.question, brief, open_questions)
+                        print(f"\n{'═' * 60}")
+                        print(f"STEPS COMPLETED: {steps}")
+                        print(f"SAVED TO:        {path}")
+                        print(f"\n{'─' * 60}\nBRIEF\n{'─' * 60}\n")
+                        print(brief)
+
+                        if open_questions:
+                            print(f"\n{'─' * 60}\nOPEN QUESTIONS\n{'─' * 60}")
+                            for q in open_questions:
+                                print(f"  • {q}")
+
+                        print(f"\n{'═' * 60}")
+                        print(f"To resume: python run.py \"{args.question}\" --session-id {session_id}")
+
+                    elif etype == "error":
+                        print(f"\n  ERROR: {event.get('message', 'unknown error')}")
 
     asyncio.run(run())
 
