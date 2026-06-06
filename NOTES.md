@@ -44,3 +44,13 @@ Workers communicate with the orchestrator via HTTP. This boundary is the runtime
 ## Quality vs. Confidence
 
 Confidence measures whether findings are factually correct. Quality is intentionally undefined — the system prompt says "you know what quality is." This is deliberate: any formal definition immediately becomes a proxy metric the model optimizes against rather than a genuine judgment. The threshold (0.5) enforces a floor; what the model considers below that floor is up to it.
+
+## What I'd Like to Build Next
+
+**Sandboxed runtimes.** Each worker runs as a separate process today, which gives memory isolation but not filesystem or network isolation. The right fix is a `docker-compose.yml` that runs each worker in its own container with a separate filesystem, network namespace, and resource limits (CPU/memory caps). A compromised worker currently has access to the `.env` file and the SQLite DB — containers close that gap.
+
+**Quality metric evaluation.** There is no empirical validation that the quality scores the LLM assigns correlate with result usefulness. The hypothesis is that pre-trained intelligence produces a consistent signal; the honest answer is we don't know yet. The right approach: build a small labeled eval set of research outputs (human-rated high/low quality), run the system, and check whether quality scores separate them. If they don't, the metric isn't earning its keep.
+
+**More tools.** The tool registry currently has `search_web` and `fetch_page`. Useful additions: an academic paper search (Semantic Scholar or arXiv API), a structured data lookup (Wikidata or Wolfram), and a citation-extraction tool that pulls references from a fetched page. Each would be registered the same way — a plain function, JSON-serializable output — and immediately available to any worker.
+
+**Hardened IAM.** Tokens are currently plaintext in `.env` and passed as Bearer headers. Production hardening would include: scoped tokens per worker generated at startup (not static strings), short TTLs with rotation, mutual TLS between orchestrator and workers, and secrets managed outside the filesystem (AWS Secrets Manager, Vault, etc.). The per-role structure is already correct — the credential storage is the weak point.
