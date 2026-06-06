@@ -4,16 +4,20 @@ Memory layer for agent findings across steps and sessions.
 L2 (episodic): per-run memory scoped by session_id.
     - Key findings from each worker
     - Dead ends (rate-limited tools, failed searches)
-    - Goal anchor reinforcement
 
-Two modes:
+L3 (cross-session): SQLite-backed global store.
+    - High-confidence findings from any session
+    - Seeded into new sessions on related research questions via keyword scoring
+
+Two L2 modes:
   - MEM0_API_KEY set: uses Mem0 hosted API with real semantic search
   - No key: lightweight in-process fallback with keyword scoring
 
-The interface is identical in both cases.
+The interface is identical in both L2 modes.
 """
 from __future__ import annotations
 import os
+import sqlite3
 
 
 class _SimpleMemory:
@@ -70,3 +74,64 @@ def get_context_summary(query: str, session_id: str, limit: int = 5) -> str:
 
 def clear_session(session_id: str) -> None:
     _mem.delete_all(user_id=session_id)
+
+
+# ---------------------------------------------------------------------------
+# L3: cross-session SQLite store
+# ---------------------------------------------------------------------------
+
+def _l3_conn() -> sqlite3.Connection:
+    from session import DB_PATH
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS global_findings (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            research_topic   TEXT NOT NULL,
+            finding          TEXT NOT NULL,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def add_global_finding(text: str, research_question: str) -> None:
+    """Persist a high-confidence finding to the cross-session store."""
+    conn = _l3_conn()
+    conn.execute(
+        "INSERT INTO global_findings (research_topic, finding) VALUES (?, ?)",
+        (research_question[:200], text[:1000]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_cross_session_context(research_question: str, limit: int = 3) -> str:
+    """
+    Return the top-scoring prior findings relevant to research_question.
+    Scans the most recent 200 global findings and ranks by keyword overlap.
+    """
+    conn = _l3_conn()
+    rows = conn.execute(
+        "SELECT research_topic, finding FROM global_findings ORDER BY created_at DESC LIMIT 200"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        return ""
+
+    query_words = set(research_question.lower().split())
+    scored = []
+    for (topic, finding) in rows:
+        # Score against both the stored topic and the finding text
+        combined = set((topic + " " + finding).lower().split())
+        overlap = len(query_words & combined)
+        if overlap > 0:
+            scored.append((finding, overlap))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    top = scored[:limit]
+    if not top:
+        return ""
+
+    return "\n".join(f"[prior session] {f}" for f, _ in top)

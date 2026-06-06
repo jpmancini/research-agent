@@ -14,7 +14,7 @@ from contracts import (
 )
 from dag import DAGPlan, PlanNode, handle_failure, build_initial_plan
 from session import save_plan, load_plan, resume_plan
-from memory import add_finding, add_dead_end, get_context_summary
+from memory import add_finding, add_dead_end, get_context_summary, add_global_finding, get_cross_session_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,8 +67,13 @@ async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
             )
 
 
-def _build_packet(node: PlanNode, plan: DAGPlan) -> HandoffPacket:
+def _build_packet(node: PlanNode, plan: DAGPlan, is_new_session: bool = False) -> HandoffPacket:
     context = get_context_summary(node.task, plan.session_id, limit=5)
+    # Seed first-round nodes with relevant findings from past sessions
+    if is_new_session and node.node_type == "search":
+        prior = get_cross_session_context(plan.research_question, limit=3)
+        if prior:
+            context = prior + ("\n" + context if context else "")
     return HandoffPacket(
         task_id=new_task_id(),
         session_id=plan.session_id,
@@ -118,7 +123,7 @@ def _event(type: str, **kwargs) -> str:
     return f"data: {json.dumps({'type': type, **kwargs})}\n\n"
 
 
-async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[str, int, list[str]]:
+async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None, is_new_session: bool = False) -> tuple[str, int, list[str]]:
     steps_completed = 0
     brief = ""
     all_open_questions: list[str] = []
@@ -140,7 +145,8 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[
                        task=node.task[:80] + "..." if len(node.task) > 80 else node.task)
         save_plan(plan)
 
-        packets = [_build_packet(node, plan) for node in ready]
+        first_round = steps_completed == 0
+        packets = [_build_packet(node, plan, is_new_session=is_new_session and first_round) for node in ready]
         async def _staggered(pkt, node, delay):
             await asyncio.sleep(delay)
             return await _call_worker(pkt, node.worker_endpoint)
@@ -156,6 +162,8 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[
 
                 if result.findings:
                     add_finding(result.findings, plan.session_id)
+                    if result.confidence >= 0.7:
+                        add_global_finding(result.findings, plan.research_question)
                 all_open_questions.extend(result.open_questions)
 
                 await emit("node_done", node_id=node.id, node_type=node.node_type,
@@ -206,20 +214,21 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[
     return brief, steps_completed, all_open_questions
 
 
-def _init_plan(req: RunRequest) -> DAGPlan:
+def _init_plan(req: RunRequest) -> tuple[DAGPlan, bool]:
+    """Returns (plan, is_new_session)."""
     if req.session_id:
         plan = load_plan(req.session_id)
         if plan:
             logger.info(f"Resuming session {req.session_id}")
-            return resume_plan(plan)
+            return resume_plan(plan), False
     plan = build_initial_plan(str(uuid.uuid4()), req.research_question)
     save_plan(plan)
-    return plan
+    return plan, True
 
 
 @router.post("/orchestrate/stream")
 async def orchestrate_stream(req: RunRequest) -> StreamingResponse:
-    plan = _init_plan(req)
+    plan, is_new_session = _init_plan(req)
     queue: asyncio.Queue = asyncio.Queue()
 
     async def generate():
@@ -230,7 +239,7 @@ async def orchestrate_stream(req: RunRequest) -> StreamingResponse:
                             for n in plan.nodes.values()])
 
         async def run():
-            brief, steps, questions = await _run_plan(plan, queue)
+            brief, steps, questions = await _run_plan(plan, queue, is_new_session=is_new_session)
             await queue.put({"type": "complete", "brief": brief,
                              "steps_completed": steps, "open_questions": list(set(questions))})
 
@@ -247,8 +256,8 @@ async def orchestrate_stream(req: RunRequest) -> StreamingResponse:
 
 @router.post("/orchestrate", response_model=RunResponse)
 async def orchestrate(req: RunRequest) -> RunResponse:
-    plan = _init_plan(req)
-    brief, steps, open_questions = await _run_plan(plan)
+    plan, is_new_session = _init_plan(req)
+    brief, steps, open_questions = await _run_plan(plan, is_new_session=is_new_session)
     return RunResponse(
         session_id=plan.session_id,
         brief=brief or "Run incomplete — check logs for failure details.",
