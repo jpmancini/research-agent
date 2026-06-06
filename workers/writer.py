@@ -1,5 +1,4 @@
 from __future__ import annotations
-from functools import lru_cache
 from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
@@ -11,20 +10,19 @@ router = APIRouter()
 
 _result_cache: dict[str, WriteResult] = {}
 
+_SYSTEM_PROMPT = (
+    "You are a research writer. Given a collection of reviewed findings and claims, "
+    "write a clear, structured research brief for an informed non-specialist audience. "
+    "Structure: (1) Overview, (2) Current Approaches, (3) Recent Milestones, "
+    "(4) Key Challenges, (5) Expert Disagreements, (6) Conclusion. "
+    "Be precise. Cite sources inline. Acknowledge uncertainty where it exists. "
+    "Target length: 500-800 words."
+)
 
-@lru_cache(maxsize=1)
-def _get_agent() -> Agent:
-    return Agent(
-        model=LiteLLMModel(model_id=GROQ_MODEL),
-        system_prompt=(
-            "You are a research writer. Given a collection of reviewed findings and claims, "
-            "write a clear, structured research brief for an informed non-specialist audience. "
-            "Structure: (1) Overview, (2) Current Approaches, (3) Recent Milestones, "
-            "(4) Key Challenges, (5) Expert Disagreements, (6) Conclusion. "
-            "Be precise. Cite sources inline. Acknowledge uncertainty where it exists. "
-            "Target length: 500-800 words."
-        ),
-    )
+
+def _new_agent() -> Agent:
+    # Fresh agent per request — Strands accumulates history on reuse
+    return Agent(model=LiteLLMModel(model_id=GROQ_MODEL), system_prompt=_SYSTEM_PROMPT)
 
 
 def _build_prompt(packet: HandoffPacket) -> str:
@@ -46,8 +44,7 @@ async def write(packet: HandoffPacket) -> WriteResult:
         return _result_cache[packet.task_id]
 
     try:
-        agent = _get_agent()
-        brief = (await call_agent_with_backoff(agent, _build_prompt(packet))).strip()
+        brief = (await call_agent_with_backoff(_new_agent(), _build_prompt(packet))).strip()
         word_count = len(brief.split())
 
         result = WriteResult(

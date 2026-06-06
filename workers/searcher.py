@@ -1,46 +1,65 @@
 from __future__ import annotations
 import json
 import re
-from functools import lru_cache
 from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, SearchResult, Source
-from tool_registry import get_tools, GROQ_MODEL
+from tool_registry import GROQ_MODEL, search_web
 from utils import call_agent_with_backoff, check_goal_drift
 
 router = APIRouter()
 
 _result_cache: dict[str, SearchResult] = {}
 
+_SYSTEM_PROMPT = (
+    "You are a research summarizer. Given a research question and a list of source "
+    "snippets, write a concise summary of what the sources say about the question. "
+    "Return JSON with keys: 'findings' (string, 2-4 sentences), "
+    "'confidence' (0.0-1.0), 'open_questions' (list of strings, max 3)."
+)
 
-@lru_cache(maxsize=1)
-def _get_agent() -> Agent:
-    return Agent(
-        model=LiteLLMModel(model_id=GROQ_MODEL),
-        tools=get_tools("searcher"),
-        system_prompt=(
-            "You are a research searcher. Given a research task, use the search_web tool "
-            "to find relevant, high-quality sources. Search with specific, targeted queries. "
-            "Return your findings as a JSON object with keys: 'findings' (string summary), "
-            "'sources' (list of source objects from search results), "
-            "'confidence' (0.0-1.0 float), "
-            "'open_questions' (list of strings), "
-            "'tried' (list of queries you searched)."
-        ),
+
+def _new_agent() -> Agent:
+    # Fresh agent per request — Strands accumulates history on reuse
+    return Agent(model=LiteLLMModel(model_id=GROQ_MODEL), system_prompt=_SYSTEM_PROMPT)
+
+
+def _get_sources(task: str, research_question: str) -> list[Source]:
+    """Call search_web directly — no LLM involved, no JSON-in-JSON problem."""
+    query = f"{research_question} {task.split(':')[-1].strip()}"[:200]
+    try:
+        raw = search_web(query)
+        results = json.loads(raw)
+    except Exception:
+        return []
+
+    sources = []
+    for s in results:
+        if isinstance(s, dict):
+            try:
+                sources.append(Source(
+                    url=s.get("url", ""),
+                    title=s.get("title", ""),
+                    snippet=s.get("snippet", "")[:200],
+                    relevance_score=float(s.get("relevance_score", 0.8)),
+                ))
+            except Exception:
+                pass
+    return sources
+
+
+def _build_summary_prompt(packet: HandoffPacket, sources: list[Source]) -> str:
+    snippets = "\n".join(
+        f"- [{s.title}]({s.url}): {s.snippet}" for s in sources
     )
-
-
-def _build_prompt(packet: HandoffPacket) -> str:
     parts = [
         f"Research question: {packet.research_question}",
-        f"Your task: {packet.task}",
+        f"Sources:\n{snippets}" if snippets else "No sources found.",
     ]
     if packet.context_summary:
-        parts.append(f"Prior context:\n{packet.context_summary}")
-    if packet.already_tried:
-        parts.append(f"Do NOT retry these: {', '.join(packet.already_tried)}")
-    parts.append("Search for relevant sources and return structured JSON results.")
+        parts.append(f"Prior context:\n{packet.context_summary[:400]}")
+    parts.append("Summarize these sources. Return only the JSON object.")
     return "\n\n".join(parts)
 
 
@@ -50,26 +69,20 @@ async def search(packet: HandoffPacket) -> SearchResult:
         return _result_cache[packet.task_id]
 
     try:
-        agent = _get_agent()
-        response_text = await call_agent_with_backoff(agent, _build_prompt(packet))
+        sources = _get_sources(packet.task, packet.research_question)
+
+        response_text = await call_agent_with_backoff(
+            _new_agent(), _build_summary_prompt(packet, sources)
+        )
 
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        data = json.loads(json_match.group()) if json_match else {}
-
-        sources = []
-        for s in data.get("sources", []):
-            if isinstance(s, dict):
-                try:
-                    sources.append(Source(**{
-                        "url": s.get("url", ""),
-                        "title": s.get("title", ""),
-                        "snippet": s.get("snippet", s.get("body", "")),
-                        "relevance_score": float(s.get("relevance_score", 0.8)),
-                    }))
-                except Exception:
-                    pass
+        try:
+            data = json.loads(json_match.group()) if json_match else {}
+        except json.JSONDecodeError:
+            data = {}
 
         findings = data.get("findings", f"Found {len(sources)} sources.")
+
         if check_goal_drift(findings, packet.research_question):
             result = SearchResult(
                 task_id=packet.task_id,
