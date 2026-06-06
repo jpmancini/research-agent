@@ -45,11 +45,35 @@ class _SimpleMemory:
         self._store.pop(user_id, None)
 
 
+class _Mem0Adapter:
+    """
+    Wraps the hosted Mem0 MemoryClient to match the _SimpleMemory interface.
+
+    The Mem0 v1 SDK returns {"results": [...]} from search (not a bare list)
+    and uses top_k rather than limit. This adapter normalises both so the
+    rest of the codebase is unaware of which backend is active.
+    """
+    def __init__(self, client) -> None:
+        self._client = client
+
+    def add(self, text: str, user_id: str) -> None:
+        self._client.add(text, user_id=user_id)
+
+    def search(self, query: str, user_id: str, limit: int = 5) -> list[dict]:
+        raw = self._client.search(query, user_id=user_id, top_k=limit)
+        # SDK returns {"results": [...]} in v1.1
+        items = raw.get("results", raw) if isinstance(raw, dict) else raw
+        return items if isinstance(items, list) else []
+
+    def delete_all(self, user_id: str) -> None:
+        self._client.delete_all(user_id=user_id)
+
+
 def _build_mem():
     api_key = os.getenv("MEM0_API_KEY")
     if api_key:
         from mem0 import MemoryClient
-        return MemoryClient(api_key=api_key)
+        return _Mem0Adapter(MemoryClient(api_key=api_key))
     return _SimpleMemory()
 
 
