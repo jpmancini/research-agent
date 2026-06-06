@@ -85,6 +85,36 @@ class DAGPlan(BaseModel):
     def all_search_node_ids(self) -> list[str]:
         return [n.id for n in self.nodes.values() if n.node_type == "search"]
 
+    def inject_revised_subtree(self, failed_node_id: str, revised_task: str) -> str:
+        """
+        Replace a failed node with a new node carrying a revised task.
+        Nodes that depended on the failed node are rewired to the replacement
+        and reset to pending so execution can continue.
+        Returns the new node id.
+        """
+        failed = self.nodes[failed_node_id]
+        new_id = f"revised_{failed_node_id}_{str(uuid.uuid4())[:8]}"
+
+        self.nodes[new_id] = PlanNode(
+            id=new_id,
+            node_type=failed.node_type,
+            task=revised_task,
+            worker_endpoint=failed.worker_endpoint,
+            depends_on=failed.depends_on,
+        )
+
+        # Rewire downstream nodes to depend on the replacement
+        for node in self.nodes.values():
+            if failed_node_id in node.depends_on:
+                node.depends_on = [
+                    new_id if d == failed_node_id else d
+                    for d in node.depends_on
+                ]
+                if node.status == "blocked":
+                    node.status = "pending"
+
+        return new_id
+
 
 FailureType = Literal["worker_crash", "logic_failure", "tool_failure", "plan_failure"]
 
@@ -141,9 +171,9 @@ def handle_failure(
         node.status = "pending"
 
     elif failure_type == "plan_failure":
-        # Mark failed, log for manual replan (full replan is a future feature)
+        # Mark failed but do NOT block downstream — orchestrator will inject
+        # a revised replacement node via inject_revised_subtree.
         node.status = "failed"
-        plan.mark_downstream_blocked(node.id)
         if result.failure_reason:
             mem0_add_fn(
                 f"PLAN FAILURE on node {node.id}: {result.failure_reason}",

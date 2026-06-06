@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import httpx
+import litellm
 from contracts import (
     HandoffPacket, HandoffResult, SearchResult, ReviewResult, WriteResult,
     new_task_id,
@@ -77,6 +78,40 @@ def _build_packet(node: PlanNode, plan: DAGPlan) -> HandoffPacket:
         already_tried=[],
         max_steps=10,
     )
+
+
+async def _replan(node: PlanNode, result: HandoffResult, plan: DAGPlan) -> str | None:
+    """
+    Call the LLM to propose a revised task for a failed node.
+    Returns a revised task string, or None if replan itself fails.
+    """
+    from tool_registry import GROQ_MODEL
+
+    completed = [
+        f"- {n.id}: {n.result.findings[:100] if n.result else 'no findings'}"
+        for n in plan.nodes.values() if n.status == "done"
+    ]
+
+    prompt = (
+        f"You are a research orchestrator. A task in your research plan has failed and needs revision.\n\n"
+        f"Research question: {plan.research_question}\n\n"
+        f"Completed steps so far:\n" + ("\n".join(completed) or "None") + "\n\n"
+        f"Failed task: {node.task}\n"
+        f"Failure reason: {result.failure_reason or 'unknown'}\n\n"
+        f"Propose a single alternative task that achieves the same goal differently. "
+        f"Be specific. Return only the revised task description, nothing else."
+    )
+
+    try:
+        response = await litellm.acompletion(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        revised = response.choices[0].message.content.strip()
+        return revised if revised else None
+    except Exception as e:
+        logger.error(f"Replan LLM call failed: {e}")
+        return None
 
 
 def _event(type: str, **kwargs) -> str:
@@ -154,6 +189,17 @@ async def _run_plan(plan: DAGPlan, queue: asyncio.Queue | None = None) -> tuple[
                            failure_type=result.failure_type,
                            reason=(result.failure_reason or "")[:120])
                 logger.warning(f"Node {node.id} failed: {result.failure_reason}")
+
+                if result.failure_type == "plan_failure":
+                    revised_task = await _replan(node, result, plan)
+                    if revised_task:
+                        new_id = plan.inject_revised_subtree(node.id, revised_task)
+                        await emit("plan_revised", failed_node=node.id,
+                                   new_node=new_id, revised_task=revised_task[:120])
+                        logger.info(f"Plan revised: {node.id} -> {new_id}")
+                    else:
+                        plan.mark_downstream_blocked(node.id)
+                        await emit("plan_revision_failed", node_id=node.id)
 
         save_plan(plan)
 
