@@ -14,7 +14,6 @@ _result_cache: dict[str, WriteResult] = {}
 def _get_agent() -> Agent:
     return Agent(
         model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
-        tools=[],
         system_prompt=(
             "You are a research writer. Given a collection of reviewed findings and claims, "
             "write a clear, structured research brief for an informed non-specialist audience. "
