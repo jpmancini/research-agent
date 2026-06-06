@@ -33,7 +33,7 @@ def _build_prompt(packet: HandoffPacket) -> str:
         f"Your task: {packet.task}",
     ]
     if packet.context_summary:
-        parts.append(f"All reviewed findings:\n{packet.context_summary}")
+        parts.append(f"All reviewed findings:\n{packet.context_summary[:3000]}")
     parts.append(
         "Write a structured research brief. Return plain text — the full brief, nothing else."
     )

@@ -25,11 +25,11 @@ def search_web(query: str) -> str:
     from ddgs import DDGS
     results = []
     with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=5):
+        for r in ddgs.text(query, max_results=3):
             results.append({
                 "url": r["href"],
                 "title": r["title"],
-                "snippet": r["body"],
+                "snippet": r["body"][:200],
                 "relevance_score": 0.8,
             })
     if not results:
@@ -52,7 +52,7 @@ def fetch_page(url: str) -> str:
     if downloaded:
         text = trafilatura.extract(downloaded)
         if text:
-            return text[:3000]
+            return text[:1500]
     logger.warning(f"fetch_page extracted no content from {url}")
     return f"[Could not extract content from {url}]"
 

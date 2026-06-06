@@ -7,7 +7,7 @@ from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, SearchResult, Source
 from tool_registry import get_tools, GROQ_MODEL
-from utils import call_agent_with_backoff
+from utils import call_agent_with_backoff, check_goal_drift
 
 router = APIRouter()
 
@@ -69,15 +69,25 @@ async def search(packet: HandoffPacket) -> SearchResult:
                 except Exception:
                     pass
 
-        result = SearchResult(
-            task_id=packet.task_id,
-            success=True,
-            findings=data.get("findings", f"Found {len(sources)} sources."),
-            confidence=float(data.get("confidence", 0.7)),
-            sources=sources,
-            tried=data.get("tried", [packet.task]),
-            open_questions=data.get("open_questions", []),
-        )
+        findings = data.get("findings", f"Found {len(sources)} sources.")
+        if check_goal_drift(findings, packet.research_question):
+            result = SearchResult(
+                task_id=packet.task_id,
+                success=False,
+                failure_type="plan_failure",
+                failure_reason=f"Findings drifted from research question. findings={findings[:120]}",
+                sources=sources,
+            )
+        else:
+            result = SearchResult(
+                task_id=packet.task_id,
+                success=True,
+                findings=findings,
+                confidence=float(data.get("confidence", 0.7)),
+                sources=sources,
+                tried=data.get("tried", [packet.task]),
+                open_questions=data.get("open_questions", []),
+            )
     except Exception as e:
         result = SearchResult(
             task_id=packet.task_id,

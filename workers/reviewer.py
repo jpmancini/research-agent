@@ -7,7 +7,7 @@ from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, ReviewResult, Claim
 from tool_registry import get_tools, GROQ_MODEL
-from utils import call_agent_with_backoff
+from utils import call_agent_with_backoff, check_goal_drift
 
 router = APIRouter()
 
@@ -43,7 +43,7 @@ def _build_prompt(packet: HandoffPacket) -> str:
         f"Your task: {packet.task}",
     ]
     if packet.context_summary:
-        parts.append(f"Prior findings from other sources:\n{packet.context_summary}")
+        parts.append(f"Prior findings from other sources:\n{packet.context_summary[:500]}")
     if packet.already_tried:
         parts.append(f"Already reviewed: {', '.join(packet.already_tried)}")
     if url:
@@ -72,17 +72,27 @@ async def review(packet: HandoffPacket) -> ReviewResult:
                 except Exception:
                     pass
 
-        result = ReviewResult(
-            task_id=packet.task_id,
-            success=True,
-            findings=data.get("findings", "Source reviewed."),
-            confidence=float(data.get("confidence", 0.7)),
-            claims=claims,
-            contradictions=data.get("contradictions", []),
-            tried=data.get("tried", []),
-            open_questions=data.get("open_questions", []),
-            suggested_next=data.get("suggested_next"),
-        )
+        findings = data.get("findings", "Source reviewed.")
+        if check_goal_drift(findings, packet.research_question):
+            result = ReviewResult(
+                task_id=packet.task_id,
+                success=False,
+                failure_type="plan_failure",
+                failure_reason=f"Review findings drifted from research question. findings={findings[:120]}",
+                claims=[],
+            )
+        else:
+            result = ReviewResult(
+                task_id=packet.task_id,
+                success=True,
+                findings=findings,
+                confidence=float(data.get("confidence", 0.7)),
+                claims=claims,
+                contradictions=data.get("contradictions", []),
+                tried=data.get("tried", []),
+                open_questions=data.get("open_questions", []),
+                suggested_next=data.get("suggested_next"),
+            )
     except Exception as e:
         result = ReviewResult(
             task_id=packet.task_id,
