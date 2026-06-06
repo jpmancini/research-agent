@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, WriteResult
+from tool_registry import GROQ_MODEL
 from utils import call_agent_with_backoff
 
 router = APIRouter()
@@ -14,7 +15,7 @@ _result_cache: dict[str, WriteResult] = {}
 @lru_cache(maxsize=1)
 def _get_agent() -> Agent:
     return Agent(
-        model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
+        model=LiteLLMModel(model_id=GROQ_MODEL),
         system_prompt=(
             "You are a research writer. Given a collection of reviewed findings and claims, "
             "write a clear, structured research brief for an informed non-specialist audience. "

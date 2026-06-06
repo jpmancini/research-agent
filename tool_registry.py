@@ -1,7 +1,15 @@
 from __future__ import annotations
-from strands.tools import tool
-from mock_data import mock_search, mock_fetch
 import json
+import logging
+import os
+from strands.tools import tool
+
+logger = logging.getLogger(__name__)
+
+# Override via GROQ_MODEL in .env
+# llama-3.1-8b-instant: 500k TPD (5x more than 70b on free tier, fast)
+# llama-3.3-70b-versatile: 100k TPD (higher quality, hits limits faster)
+GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/llama-3.1-8b-instant")
 
 
 @tool
@@ -14,9 +22,19 @@ def search_web(query: str) -> str:
     Returns:
         JSON list of sources with url, title, snippet, and relevance_score.
     """
-    from contracts import Source
-    sources = mock_search(query)
-    return json.dumps([s.model_dump() for s in sources])
+    from ddgs import DDGS
+    results = []
+    with DDGS() as ddgs:
+        for r in ddgs.text(query, max_results=5):
+            results.append({
+                "url": r["href"],
+                "title": r["title"],
+                "snippet": r["body"],
+                "relevance_score": 0.8,
+            })
+    if not results:
+        logger.warning(f"search_web returned no results for: {query}")
+    return json.dumps(results)
 
 
 @tool
@@ -27,9 +45,16 @@ def fetch_page(url: str) -> str:
         url: The full URL of the page to fetch.
 
     Returns:
-        The main text content of the page.
+        The main text content of the page, trimmed to 3000 characters.
     """
-    return mock_fetch(url)
+    import trafilatura
+    downloaded = trafilatura.fetch_url(url)
+    if downloaded:
+        text = trafilatura.extract(downloaded)
+        if text:
+            return text[:3000]
+    logger.warning(f"fetch_page extracted no content from {url}")
+    return f"[Could not extract content from {url}]"
 
 
 REGISTRY: dict[str, dict] = {

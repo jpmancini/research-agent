@@ -6,8 +6,7 @@ from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, SearchResult, Source
-from mock_data import mock_search
-from tool_registry import get_tools
+from tool_registry import get_tools, GROQ_MODEL
 from utils import call_agent_with_backoff
 
 router = APIRouter()
@@ -18,7 +17,7 @@ _result_cache: dict[str, SearchResult] = {}
 @lru_cache(maxsize=1)
 def _get_agent() -> Agent:
     return Agent(
-        model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
+        model=LiteLLMModel(model_id=GROQ_MODEL),
         tools=get_tools("searcher"),
         system_prompt=(
             "You are a research searcher. Given a research task, use the search_web tool "
@@ -57,11 +56,18 @@ async def search(packet: HandoffPacket) -> SearchResult:
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
         data = json.loads(json_match.group()) if json_match else {}
 
-        sources_raw = data.get("sources", [])
-        sources = [Source(**s) if isinstance(s, dict) else s for s in sources_raw]
-
-        if not sources:
-            sources = mock_search(packet.task)
+        sources = []
+        for s in data.get("sources", []):
+            if isinstance(s, dict):
+                try:
+                    sources.append(Source(**{
+                        "url": s.get("url", ""),
+                        "title": s.get("title", ""),
+                        "snippet": s.get("snippet", s.get("body", "")),
+                        "relevance_score": float(s.get("relevance_score", 0.8)),
+                    }))
+                except Exception:
+                    pass
 
         result = SearchResult(
             task_id=packet.task_id,

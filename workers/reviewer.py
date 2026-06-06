@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from strands import Agent
 from strands.models.litellm import LiteLLMModel
 from contracts import HandoffPacket, ReviewResult, Claim
-from tool_registry import get_tools
+from tool_registry import get_tools, GROQ_MODEL
 from utils import call_agent_with_backoff
 
 router = APIRouter()
@@ -17,7 +17,7 @@ _result_cache: dict[str, ReviewResult] = {}
 @lru_cache(maxsize=1)
 def _get_agent() -> Agent:
     return Agent(
-        model=LiteLLMModel(model_id="groq/llama-3.3-70b-versatile"),
+        model=LiteLLMModel(model_id=GROQ_MODEL),
         tools=get_tools("reviewer"),
         system_prompt=(
             "You are a research reviewer. Given a source URL and research context, "

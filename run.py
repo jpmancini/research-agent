@@ -5,10 +5,35 @@ Usage:
     python run.py "What are the latest efforts to simulate a brain in a computer?"
     python run.py "Your question" --session-id <id>   # resume a prior run
 """
-import sys
 import asyncio
 import argparse
+from pathlib import Path
+from datetime import datetime
 import httpx
+
+
+OUTPUT_DIR = Path("output")
+
+
+def _save_brief(session_id: str, question: str, data: dict) -> Path:
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = OUTPUT_DIR / f"{timestamp}_{session_id[:8]}.md"
+    path.write_text(
+        f"# Research Brief\n\n"
+        f"**Question:** {question}\n"
+        f"**Session:** {session_id}\n"
+        f"**Steps completed:** {data['steps_completed']}\n"
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"---\n\n"
+        f"{data['brief']}\n\n"
+        + (
+            "---\n\n## Open Questions\n\n"
+            + "\n".join(f"- {q}" for q in data["open_questions"])
+            if data["open_questions"] else ""
+        )
+    )
+    return path
 
 
 def main():
@@ -30,9 +55,12 @@ def main():
             resp.raise_for_status()
             data = resp.json()
 
+        path = _save_brief(data["session_id"], args.question, data)
+
         print(f"\n{'═' * 60}")
-        print(f"SESSION ID: {data['session_id']}")
+        print(f"SESSION ID:      {data['session_id']}")
         print(f"STEPS COMPLETED: {data['steps_completed']}")
+        print(f"SAVED TO:        {path}")
         print(f"\n{'─' * 60}\nBRIEF\n{'─' * 60}\n")
         print(data["brief"])
 
