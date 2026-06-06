@@ -1,3 +1,15 @@
+"""
+Tool registry — the boundary between capability and role.
+
+Tools are registered with tags. get_tools(worker_type) returns only the
+tools whose tags match the worker's allowed set. Workers never import
+tools directly; they always go through the registry. Adding a new tool
+means adding it here and tagging it — no worker code changes required.
+
+GROQ_MODEL is read from env so the model can be swapped without touching
+worker code. llama-3.1-8b-instant is the default: 500k TPD on the free
+tier vs 100k for 70b-versatile, and fast enough for parallel dispatches.
+"""
 from __future__ import annotations
 import json
 import logging
@@ -6,9 +18,6 @@ from strands.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# Override via GROQ_MODEL in .env
-# llama-3.1-8b-instant: 500k TPD (5x more than 70b on free tier, fast)
-# llama-3.3-70b-versatile: 100k TPD (higher quality, hits limits faster)
 GROQ_MODEL = os.getenv("GROQ_MODEL", "groq/llama-3.1-8b-instant")
 
 
@@ -45,7 +54,7 @@ def fetch_page(url: str) -> str:
         url: The full URL of the page to fetch.
 
     Returns:
-        The main text content of the page, trimmed to 3000 characters.
+        The main text content of the page, trimmed to 1500 characters.
     """
     import trafilatura
     downloaded = trafilatura.fetch_url(url)

@@ -1,3 +1,14 @@
+"""
+Typed handoff contracts for all agent boundaries.
+
+HandoffPacket is what the orchestrator sends to every worker.
+HandoffResult (and its subtypes) is what every worker sends back.
+Nothing crosses a worker boundary as a loose dict or free-form string.
+
+The research_question field on HandoffPacket is the goal anchor — it is
+present on every call so no worker can drift from the original question
+regardless of how many steps have elapsed or how much context has changed.
+"""
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Literal

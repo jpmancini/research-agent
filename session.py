@@ -1,6 +1,14 @@
 """
-SQLite-backed session store for DAGPlan persistence.
-Saves after every orchestrator batch so a restart loses at most one step.
+SQLite-backed session management for DAGPlan persistence.
+
+The full DAGPlan (all nodes, statuses, retry counts, results) is
+serialized to JSON and written to SQLite after every orchestrator batch.
+On restart, resume_plan() resets any 'running' nodes back to 'pending'
+so in-flight work retries and completed work is not repeated.
+
+Sessions are identified by UUID. The CLI accepts --session-id to resume
+a prior run; the orchestrator also seeds new sessions with relevant
+findings from past sessions via the L3 memory store in memory.py.
 """
 from __future__ import annotations
 import sqlite3

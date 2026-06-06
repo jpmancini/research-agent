@@ -1,3 +1,13 @@
+"""
+DAG-based research plan.
+
+A DAGPlan holds PlanNode objects whose execution order is determined by
+depends_on edges. The orchestrator calls ready_nodes() each iteration to
+find nodes whose dependencies are all done, dispatches them in parallel,
+then records results. The plan grows at runtime: inject_review_nodes()
+adds one review node per search result, and inject_revised_subtree()
+replaces a failed node with a replanned alternative.
+"""
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Literal
