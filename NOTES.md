@@ -45,6 +45,8 @@ Workers communicate with the orchestrator via HTTP. This boundary is the runtime
 
 Confidence measures whether findings are factually correct. Quality is intentionally undefined — the system prompt says "you know what quality is." This is deliberate: any formal definition immediately becomes a proxy metric the model optimizes against rather than a genuine judgment. The threshold (0.5) enforces a floor; what the model considers below that floor is up to it.
 
+The distinction came from thinking about how to measure the effectiveness of ideas — not just whether something is correct, but whether it is good. Robert Pirsig's *Zen and the Art of Motorcycle Maintenance* and *Lila* argue that Quality precedes any definition you could give it: you recognize it before you can articulate it. Applied here, that means trusting the model's pre-trained judgment rather than specifying what quality means — on the theory that something genuinely good should score higher on average across many evaluations, even if no single evaluation can fully justify the score.
+
 ## What I'd Like to Build Next
 
 **Sandboxed runtimes.** Each worker runs as a separate process today, which gives memory isolation but not filesystem or network isolation. The right fix is a `docker-compose.yml` that runs each worker in its own container with a separate filesystem, network namespace, and resource limits (CPU/memory caps). A compromised worker currently has access to the `.env` file and the SQLite DB — containers close that gap.
