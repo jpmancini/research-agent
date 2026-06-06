@@ -3,6 +3,7 @@ import asyncio
 import uuid
 import json
 import logging
+import os
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -19,8 +20,16 @@ from memory import add_finding, add_dead_end, get_context_summary, add_global_fi
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-BASE_URL = "http://localhost:8000"
+_MONOLITH = "http://localhost:8000"
 WORKER_TIMEOUT = 120.0
+
+# Per-endpoint base URLs. Set env vars to route to separate worker processes;
+# fall back to the monolith URL so app.py works unchanged.
+WORKER_URLS: dict[str, str] = {
+    "/search": os.getenv("SEARCHER_URL", _MONOLITH),
+    "/review": os.getenv("REVIEWER_URL", _MONOLITH),
+    "/write":  os.getenv("WRITER_URL",   _MONOLITH),
+}
 
 
 class RunRequest(BaseModel):
@@ -36,10 +45,11 @@ class RunResponse(BaseModel):
 
 
 async def _call_worker(packet: HandoffPacket, endpoint: str) -> HandoffResult:
+    base = WORKER_URLS.get(endpoint, _MONOLITH)
     async with httpx.AsyncClient(timeout=WORKER_TIMEOUT) as client:
         try:
             resp = await client.post(
-                f"{BASE_URL}{endpoint}",
+                f"{base}{endpoint}",
                 content=packet.model_dump_json(),
                 headers={"Content-Type": "application/json"},
             )
