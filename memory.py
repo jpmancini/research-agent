@@ -60,7 +60,7 @@ class _Mem0Adapter:
         self._client.add(text, user_id=user_id)
 
     def search(self, query: str, user_id: str, limit: int = 5) -> list[dict]:
-        raw = self._client.search(query, user_id=user_id, top_k=limit)
+        raw = self._client.search(query, filters={"user_id": user_id}, top_k=limit)
         # SDK returns {"results": [...]} in v1.1
         items = raw.get("results", raw) if isinstance(raw, dict) else raw
         return items if isinstance(items, list) else []
